@@ -48,9 +48,12 @@ impl AirPlayReceiver {
         });
 
         // --- Main Audio - Media ---
+        // Discover Pro / CarPlay 210.81 test build: the car advertises
+        // 48 kHz stereo only. Negotiate 48 kHz from the phone too, so
+        // the proxy never forwards 44.1 kHz PCM to this head unit.
         r.audio_formats.push(AudioFormatStruct {
             audio_input_formats: None,
-            audio_output_formats: Some(AudioFormat::PCM_44100_STEREO | AudioFormat::PCM_48000_STEREO),
+            audio_output_formats: Some(AudioFormat::PCM_48000_STEREO),
             stream_type: StreamType::MainAudio,
             audio_type: Some(AudioType::Media),
         });
@@ -101,7 +104,7 @@ impl AirPlayReceiver {
         // --- Main High Audio - Media ---
         r.audio_formats.push(AudioFormatStruct {
             audio_input_formats: None,
-            audio_output_formats: Some(AudioFormat::AAC_LC_48000_STEREO | AudioFormat::AAC_LC_44100_STEREO),
+            audio_output_formats: Some(AudioFormat::AAC_LC_48000_STEREO),
             stream_type: StreamType::MainHighAudio,
             audio_type: Some(AudioType::Media),
         });
