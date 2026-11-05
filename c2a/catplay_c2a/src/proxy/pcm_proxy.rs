@@ -9,8 +9,11 @@ use catplay_carplay::{
     msg::StreamType,
     rtsp_frame::RtspResult,
 };
-use log::debug;
+use log::{debug, info};
 use tokio::{task::JoinHandle, time::sleep};
+
+#[path = "mic_diagnostics.rs"]
+mod mic_diagnostics;
 
 #[inline]
 pub fn duration_to_frames_u32_saturating(d: Duration, freq: usize) -> u32 {
@@ -35,6 +38,7 @@ pub struct PcmProxyPlayer {
     interval: Duration,
     receiver: Option<mpsc::Receiver<AudioSinkBox<i16>>>,
     limit: usize,
+    mic_diagnostics: bool,
 }
 
 impl PcmProxyPlayer {
@@ -57,6 +61,7 @@ impl PcmProxyPlayer {
             interval,
             receiver: Some(receiver),
             limit,
+            mic_diagnostics: false,
         }
     }
 
@@ -74,6 +79,12 @@ impl PcmProxyPlayer {
         let ring = RingBuffer::spsc(ring_size_samples);
         let player = PcmProxyPlayer::new(ring, sample_rate, INTERVAL, channels_per_frame, channel.1, ring_size_samples);
         let recorder = PcmProxyRecorder::new(channel.0);
+        (player, recorder)
+    }
+
+    pub fn microphone_pair(sample_rate: u32, channels_per_frame: usize) -> (PcmProxyPlayer, PcmProxyRecorder) {
+        let (mut player, recorder) = Self::pair(sample_rate, channels_per_frame);
+        player.mic_diagnostics = true;
         (player, recorder)
     }
 }
@@ -110,8 +121,14 @@ impl AudioPlayer for PcmProxyPlayer {
         let channels_per_frame = self.channels_per_frame;
 
         let interval = self.interval;
+        let diagnose_mic = self.mic_diagnostics;
         let task = tokio::spawn(async move {
             let mut player = source;
+            let mut mic_window = mic_diagnostics::MicWindow::default();
+            let mut mic_report_at = Instant::now() + Duration::from_secs(1);
+            if diagnose_mic {
+                info!("Mic diagnostics started: rate={sample_rate} channels={channels_per_frame}");
+            }
 
             loop {
                 let v = match recorder.as_mut() {
@@ -140,7 +157,10 @@ impl AudioPlayer for PcmProxyPlayer {
 
                     let mut buf = vec![0i16; readable as _];
 
-                    player.read(&mut buf);
+                    let complete = player.read(&mut buf);
+                    if diagnose_mic {
+                        mic_window.observe(&buf, complete);
+                    }
                     let last_allowed = last_allowed_sample;
                     let min_src = if last_allowed <= stat.written as u32 { "wall" } else { "written" };
 
@@ -154,6 +174,17 @@ impl AudioPlayer for PcmProxyPlayer {
                     );
 
                     v.write(&buf);
+                }
+
+                if diagnose_mic && Instant::now() >= mic_report_at {
+                    let stat = player.stat_raw();
+                    let window = mic_window.take();
+                    let attached = recorder.is_some();
+                    info!(
+                        "Mic diagnostics: source_written={} source_consumed={} forwarded={} nonzero={} peak={} incomplete_reads={} recorder_attached={attached}",
+                        stat.written, stat.consumed, window.samples, window.nonzero, window.peak, window.incomplete_reads
+                    );
+                    mic_report_at = Instant::now() + Duration::from_secs(2);
                 }
 
                 sleep(interval).await;

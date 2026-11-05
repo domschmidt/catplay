@@ -40,7 +40,7 @@ impl AudioProxyUtil {
             // If audio type is Telephony or SpeechRecognition, open a duplex stream with a microphone too
             // in such case, `open_microphone` will follow `open_audio` (that order is a small implementation detail)
             // and we will have an instance of AudioRecorder to return as a microphone proxy
-            let p = PcmProxyPlayer::pair(rate, pcm_format.channels_per_frame as _);
+            let p = PcmProxyPlayer::microphone_pair(rate, pcm_format.channels_per_frame as _);
             pending_mic.replace(Box::new(p.1) as _);
             mic_player.replace(Box::new(p.0) as _);
         }
