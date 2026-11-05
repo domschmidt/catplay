@@ -25,6 +25,7 @@ use log::{debug, error, info, warn};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::proxy_rpc::{CarManager, CarPlayRxSession, PhoneGate, TxAdapter, TxAdapterOp};
+use crate::{HardwareConfig, hardware_controls::HardwareWorker, hardware_logic::IndicatorState};
 
 pub struct ProdGadgetConfig {
     pub homekit_rx: HomekitStorageRef,
@@ -46,10 +47,12 @@ pub struct ProdGadgetConfig {
 
     pub bt_cache_file: String,
     pub persist_dir: Option<PathBuf>,
+    pub hardware: HardwareConfig,
 }
 
 pub struct ProdGadget {
     cfg: ProdGadgetConfig,
+    hardware: HardwareWorker,
 
     rx: Option<Reconciler<CarPlayWirelessGadget<CarPlayRxSession>>>,
     // rx_usb: Option<Reconciler<CarPlayUsbGadget<CarPlayRxSession>>>,
@@ -134,6 +137,7 @@ impl ProdGadget {
     pub fn new(cfg: ProdGadgetConfig) -> Reconciler<Self> {
         Reconciler::new(
             Self {
+                hardware: HardwareWorker::new(cfg.hardware.clone()),
                 cfg,
                 // rx_usb: None,
                 rx: None,
@@ -207,7 +211,9 @@ impl EventSleeper for ProdGadget {
     async fn sleep(&mut self) -> Option<EventToken> {
         trace::mark(Stage::SleepLock);
         let mut pending_transmitter = self.pending_transmitter.lock().await;
-        let fallback = if self.burst_wakeups || self.phone_handover.is_some() {
+        let fallback = if self.hardware.enabled() {
+            Duration::from_millis(25)
+        } else if self.burst_wakeups || self.phone_handover.is_some() {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)
@@ -291,6 +297,22 @@ impl Reconcilable for ProdGadget {
         if stale_car {
             info!("Car worker ended; discarding stale session");
             self.restart_car_session().await;
+        }
+        let switching = self
+            .rx
+            .as_ref()
+            .is_some_and(|rx| rx.child().is_switching_device());
+        let indicator = if prev.is_err() {
+            IndicatorState::Error
+        } else if switching {
+            IndicatorState::Switching
+        } else if matches!(prev, Ok(LocalState::Running)) {
+            IndicatorState::Connected
+        } else {
+            IndicatorState::Waiting
+        };
+        if self.hardware.update(indicator) {
+            self.request_next_device();
         }
         // Resolve radio health before allowing a phone to start connecting.
         trace::mark(Stage::ParentTx);
